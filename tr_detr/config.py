@@ -150,6 +150,14 @@ class BaseOptions(object):
         # my_loss_config
         parser.add_argument('--VTC_loss_coef', default=1, type=float)
         parser.add_argument('--CTC_loss_coef', default=1, type=float)
+        
+        
+        parser.add_argument('--m_classes', type=str, default=None)
+        parser.add_argument('--tgt_embed', action='store_true')
+        parser.add_argument('--cc_matching', action="store_true")
+        parser.add_argument('--class_anchor', action="store_true")
+        parser.add_argument("--pos_query", default=1, type=int, help="pos_query")
+        
         self.parser = parser
 
     def display_save(self, opt):

@@ -65,6 +65,7 @@ class Transformer(nn.Module):
                  num_patterns=0,
                  modulate_t_attn=True,
                  bbox_embed_diff_each_layer=False,
+                 m_classes=None, tgt_embed=False, class_anchor=False,
                  ):
         super().__init__()
 
@@ -89,6 +90,16 @@ class Transformer(nn.Module):
                                           d_model=d_model, query_dim=query_dim, keep_query_pos=keep_query_pos, query_scale_type=query_scale_type,
                                           modulate_t_attn=modulate_t_attn,
                                           bbox_embed_diff_each_layer=bbox_embed_diff_each_layer)
+        
+        self.m_classes = m_classes
+        self.tgt_embed = tgt_embed
+        self.class_anchor = class_anchor
+
+        if m_classes is not None:
+            self.num_classes = len(m_classes[1:-1].split(','))
+            if self.tgt_embed:
+                self.patterns = nn.Embedding(self.num_classes, d_model)
+                
 
         self._reset_parameters()
 
@@ -99,7 +110,7 @@ class Transformer(nn.Module):
         self.nhead = nhead
         self.dec_layers = num_decoder_layers
         self.num_queries = num_queries
-        self.num_patterns = num_patterns
+
 
     def _reset_parameters(self):
         for p in self.parameters():
@@ -122,7 +133,14 @@ class Transformer(nn.Module):
         bs, l, d = src.shape
         src = src.permute(1, 0, 2)  # (L, batch_size, d)
         pos_embed = pos_embed.permute(1, 0, 2)   # (L, batch_size, d)
-        refpoint_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)  # (#queries, batch_size, d)
+        if self.m_classes is not None and self.class_anchor:
+            num_queries = query_embed.shape[0]
+            # class_query_embed = query_embed.view(num_queries, -1, 2).permute(1, 0, 2)
+            class_refpoint_embed = query_embed.unsqueeze(1).repeat(1, bs, 1).view(num_queries, bs, -1, 2).permute(2, 0, 1, 3)  # (#class, #queries, batch_size, d)
+            refpoint_embed = torch.concat([rp for rp in class_refpoint_embed], dim=0) # (#class * #queries, batch_size, d)
+        else:
+            refpoint_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)  # (#queries, batch_size, d)
+
 
         src = self.t2v_encoder(src, src_key_padding_mask=mask, pos=pos_embed, video_length=video_length)  # (L, batch_size, d)
         src = src[:video_length]
@@ -137,7 +155,20 @@ class Transformer(nn.Module):
         # *Use highlight scores to suppress feature expressions in non-highlight clips
         memory_local, saliency_scores = self.HD2MR(memory_local, saliency_proj1, src, video_length, mask_local, pos_embed_local)
 
-        tgt = torch.zeros(refpoint_embed.shape[0], bs, d).cuda()
+        if self.m_classes is not None:
+            if self.tgt_embed:
+                tgt = self.patterns.weight[:, None, None, :].repeat(1, self.num_queries, bs, 1).flatten(0, 1)
+                if not self.class_anchor:
+                    refpoint_embed = refpoint_embed.repeat(self.num_classes, 1, 1)
+            else:
+                if self.class_anchor:
+                    tgt = torch.zeros(refpoint_embed.shape[0], bs, d).cuda()
+                else:
+                    tgt = torch.zeros(refpoint_embed.shape[0] * self.num_classes, bs, d).cuda()
+                    refpoint_embed = refpoint_embed.repeat(self.num_classes, 1, 1)
+        else:
+            tgt = torch.zeros(refpoint_embed.shape[0], bs, d).cuda()
+            
         hs, references = self.decoder(tgt, memory_local, memory_key_padding_mask=mask_local,
                           pos=pos_embed_local, refpoints_unsigmoid=refpoint_embed)  # (#layers, #queries, batch_size, d)
         
@@ -870,6 +901,10 @@ def build_transformer(args):
         normalize_before=args.pre_norm,
         return_intermediate_dec=True,
         activation='prelu',
+        num_queries=args.num_queries,
+        m_classes=args.m_classes,
+        tgt_embed=args.tgt_embed,
+        class_anchor=args.class_anchor,
     )
 
 

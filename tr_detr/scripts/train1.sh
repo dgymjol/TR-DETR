@@ -48,8 +48,15 @@ CTC_loss_coef=0.5
 label_loss_coef=4
 
 
+# list="2021 2022 2023 2024 2025"
+list="2025"
+results_root=results_tgt_cc
+
+for seed in $list
+do
+  echo $seed
+
 PYTHONPATH=$PYTHONPATH:. python tr_detr/train.py \
---seed $seed \
 --label_loss_coef $label_loss_coef \
 --VTC_loss_coef $VTC_loss_coef \
 --CTC_loss_coef $CTC_loss_coef \
@@ -64,9 +71,14 @@ PYTHONPATH=$PYTHONPATH:. python tr_detr/train.py \
 --t_feat_dim ${t_feat_dim} \
 --bsz ${bsz} \
 --results_root ${results_root} \
---exp_id ${exp_id} \
 --lr ${lr} \
 --n_epoch ${n_epoch} \
 --lw_saliency ${lw_saliency} \
 --lr_drop ${lr_drop} \
+--exp_id tgt_cc_${seed} \
+--m_classes "[12, 36, 65, 150]" \
+--cc_matching \
+--tgt_embed \
 ${@:1}
+
+done
