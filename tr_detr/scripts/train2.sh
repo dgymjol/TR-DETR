@@ -48,11 +48,10 @@ CTC_loss_coef=0.5
 label_loss_coef=4
 
 
-gpunum=0
-
+gpunum=1
 
 list="2021 2022 2023 2024 2025"
-results_root=results_tgt_cc
+results_root=results_tgt_cc_crop
 
 for seed in $list
 do
@@ -81,38 +80,12 @@ CUDA_VISIBLE_DEVICES=${gpunum} PYTHONPATH=$PYTHONPATH:. python tr_detr/train.py 
 --m_classes "[12, 36, 65, 150]" \
 --cc_matching \
 --tgt_embed \
-${@:1}
-
-done
-
-
-list="2021 2022 2023 2024 2025"
-results_root=results_base
-
-for seed in $list
-do
-  echo $seed
-
-CUDA_VISIBLE_DEVICES=${gpunum} PYTHONPATH=$PYTHONPATH:. python tr_detr/train.py \
---label_loss_coef $label_loss_coef \
---VTC_loss_coef $VTC_loss_coef \
---CTC_loss_coef $CTC_loss_coef \
---dset_name ${dset_name} \
---ctx_mode ${ctx_mode} \
---train_path ${train_path} \
---eval_path ${eval_path} \
---eval_split_name ${eval_split_name} \
---v_feat_dirs ${v_feat_dirs[@]} \
---v_feat_dim ${v_feat_dim} \
---t_feat_dir ${t_feat_dir} \
---t_feat_dim ${t_feat_dim} \
---bsz ${bsz} \
---results_root ${results_root} \
---lr ${lr} \
---n_epoch ${n_epoch} \
---lw_saliency ${lw_saliency} \
---lr_drop ${lr_drop} \
---exp_id base_${seed} \
+--crop \
+--fore_min 10 \
+--back_min 10 \
+--mid_min 15 \
+--crop_random \
+--crop_all \
 ${@:1}
 
 done
