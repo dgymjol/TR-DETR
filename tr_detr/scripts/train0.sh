@@ -52,7 +52,9 @@ results_root='result_new_cut_aug'
 aug_seed=0
 train_path=data/highlight_train_aug_release_seed_${aug_seed}.jsonl
 
-PYTHONPATH=$PYTHONPATH:. python tr_detr/train.py \
+gpunum=1
+
+CUDA_VISIBLE_DEVICES=${gpunum} PYTHONPATH=$PYTHONPATH:. python tr_detr/train.py \
 --seed $seed \
 --label_loss_coef $label_loss_coef \
 --VTC_loss_coef $VTC_loss_coef \
@@ -68,10 +70,13 @@ PYTHONPATH=$PYTHONPATH:. python tr_detr/train.py \
 --t_feat_dim ${t_feat_dim} \
 --bsz ${bsz} \
 --results_root ${results_root} \
---exp_id augseed_${aug_seed} \
---crop \
 --lr ${lr} \
 --n_epoch ${n_epoch} \
 --lw_saliency ${lw_saliency} \
 --lr_drop ${lr_drop} \
+--exp_id lad_augseed_${aug_seed} \
+--crop \
+--m_classes "[12, 36, 65, 150]" \
+--cc_matching \
+--tgt_embed \
 ${@:1}
