@@ -87,7 +87,7 @@ class TRDETR(nn.Module):
             self.class_embed = nn.Linear(hidden_dim, 2)  # 0: background, 1: foreground
             self.num_patterns = 1
         else:
-            self.m_vals = [int(v) for v in m_classes[1:-1].split(',')]
+            self.m_vals = [float(v) for v in m_classes[1:-1].split(',')]
             if class_anchor:
                 self.num_patterns = len(self.m_vals)
             else:
@@ -310,10 +310,10 @@ class SetCriterion(nn.Module):
            The target spans are expected in format (center_x, w), normalized by the image size.
         """
         assert 'pred_spans' in outputs
-        targets = targets["span_labels"]
+        targets_span = targets["span_labels"]
         idx = self._get_src_permutation_idx(indices)
         src_spans = outputs['pred_spans'][idx]  # (#spans, max_v_l * 2)
-        tgt_spans = torch.cat([t['spans'][i] for t, (_, i) in zip(targets, indices)], dim=0)  # (#spans, 2)
+        tgt_spans = torch.cat([t['spans'][i] for t, (_, i) in zip(targets_span, indices)], dim=0)  # (#spans, 2)
         if self.span_loss_type == "l1":
             loss_span = F.l1_loss(src_spans, tgt_spans, reduction='none')
             loss_giou = 1 - torch.diag(generalized_temporal_iou(span_cxw_to_xx(src_spans), span_cxw_to_xx(tgt_spans)))
@@ -326,6 +326,23 @@ class SetCriterion(nn.Module):
         losses = {}
         losses['loss_span'] = loss_span.mean()
         losses['loss_giou'] = loss_giou.mean()
+
+        if 'loss_moment_class' in targets:
+            target_cls = targets['loss_moment_class']
+            tgt_cls = torch.cat([t['m_cls'][i] for t, (_, i) in zip(target_cls, indices)], dim=0)  # (#spans, 2)
+
+            short_idx = (tgt_cls == 0).nonzero(as_tuple=True)[0]
+            medium_idx = (tgt_cls == 1).nonzero(as_tuple=True)[0]
+            long_idx = (tgt_cls == 2).nonzero(as_tuple=True)[0]
+
+            losses['loss_short_giou'] = loss_giou[short_idx].mean()
+            losses['loss_medium_giou'] = loss_giou[medium_idx].mean()
+            losses['loss_long_giou'] = loss_giou[long_idx].mean()
+
+            losses['loss_short_span'] = loss_span[short_idx].mean()
+            losses['loss_medium_span'] = loss_span[medium_idx].mean()
+            losses['loss_long_span'] = loss_span[long_idx].mean()
+
         return losses
 
     def loss_labels(self, outputs, targets, indices, log=True):

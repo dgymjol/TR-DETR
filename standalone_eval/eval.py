@@ -91,8 +91,11 @@ def compute_mr_r1(submission, ground_truth, iou_thds=np.linspace(0.5, 0.95, 10))
     gt_windows = np.array([gt_qid2window[k] for k in qids]).astype(float)
     pred_gt_iou = compute_temporal_iou_batch_paired(pred_windows, gt_windows)
     iou_thd2recall_at_one = {}
+    r1s = []
     for thd in iou_thds:
         iou_thd2recall_at_one[str(thd)] = float(f"{np.mean(pred_gt_iou >= thd) * 100:.2f}")
+        r1s.append(np.mean(pred_gt_iou >= thd))
+    iou_thd2recall_at_one['average'] = float(f"{np.mean(np.array(r1s)) * 100:.2f}")
     return iou_thd2recall_at_one
 
 
@@ -295,11 +298,18 @@ def eval_submission(submission, ground_truth, verbose=True, match_number=True):
             "MR-full-mAP": moment_ret_scores["full"]["MR-mAP"]["average"],
             "MR-full-mAP@0.5": moment_ret_scores["full"]["MR-mAP"]["0.5"],
             "MR-full-mAP@0.75": moment_ret_scores["full"]["MR-mAP"]["0.75"],
+
+            "MR-full-R1@0.5": moment_ret_scores["full"]["MR-R1"]["0.5"],
+            "MR-full-R1@0.7": moment_ret_scores["full"]["MR-R1"]["0.7"],
+            "MR-full-R1": moment_ret_scores["full"]["MR-R1"]["average"],
+
             "MR-short-mAP": moment_ret_scores["short"]["MR-mAP"]["average"],
             "MR-middle-mAP": moment_ret_scores["middle"]["MR-mAP"]["average"],
             "MR-long-mAP": moment_ret_scores["long"]["MR-mAP"]["average"],
-            "MR-full-R1@0.5": moment_ret_scores["full"]["MR-R1"]["0.5"],
-            "MR-full-R1@0.7": moment_ret_scores["full"]["MR-R1"]["0.7"],
+
+            "MR-short-R1": moment_ret_scores["short"]["MR-R1"]["average"],
+            "MR-middle-R1": moment_ret_scores["middle"]["MR-R1"]["average"],
+            "MR-long-R1": moment_ret_scores["long"]["MR-R1"]["average"],
         }
         eval_metrics_brief.update(
             sorted([(k, v) for k, v in moment_ret_scores_brief.items()], key=lambda x: x[0]))

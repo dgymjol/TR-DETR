@@ -10,6 +10,8 @@ from utils.tensor_utils import pad_sequences_1d
 from tr_detr.span_utils import span_xx_to_cxw
 from copy import deepcopy
 
+from utils.length_aug import *
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,8 +33,9 @@ class StartEndDataset(Dataset):
                  max_q_l=32, max_v_l=75, data_ratio=1.0, ctx_mode="video",
                  normalize_v=True, normalize_t=True, load_labels=True,
                  clip_len=2, max_windows=5, span_loss_type="l1", txt_drop_ratio=0,
-                 dset_domain=None, m_classes=None, crop=False,
-                 fore_min=20, back_min=130, mid_min=30, crop_random=False, merge=False, crop_all=False):
+                 dset_domain=None, m_classes=None, 
+                 crop=False, merge=False, thres_crop=10, thres_merge=10,
+                 loss_m_classes=None):
         self.dset_name = dset_name
         self.data_path = data_path
         self.data_ratio = data_ratio
@@ -54,12 +57,9 @@ class StartEndDataset(Dataset):
         self.txt_drop_ratio = txt_drop_ratio
         
         self.crop = crop
-        self.fore_min = fore_min
-        self.back_min = back_min
-        self.mid_min = mid_min
-        self.crop_random = crop_random
         self.merge = merge
-        self.crop_all = crop_all
+        self.thres_crop = thres_crop
+        self.thres_merge = thres_merge
         
         if "val" in data_path or "test" in data_path:
             assert txt_drop_ratio == 0
@@ -82,9 +82,14 @@ class StartEndDataset(Dataset):
             self.data = new_data
             
         if m_classes is not None:
-            self.m_vals = [int(v) for v in m_classes[1:-1].split(',')]
+            self.m_vals = [float(v) for v in m_classes[1:-1].split(',')]
         else:
             self.m_vals = None
+
+        if loss_m_classes is not None:
+            self.loss_m_vals = [float(v) for v in loss_m_classes[1:-1].split(',')]
+        else:
+            self.loss_m_vals = None
 
     def load_data(self):
         datalist = load_jsonl(self.data_path)
@@ -93,8 +98,91 @@ class StartEndDataset(Dataset):
             datalist = datalist[:n_examples]
             logger.info("Using {}% of the data: {} examples"
                         .format(self.data_ratio * 100, n_examples))
+
+        if not self.crop and not self.merge:
+            return datalist
+
+        new_datalist = []
+
+        for data in datalist:
+
+            new_datalist.append(deepcopy(data))
             
-        return datalist
+            if 'vgg' in self.dset_name:
+                clip_len = int(data['duration'] / ctx_l)
+            else: 
+                clip_len = int(self.clip_len)
+
+            ctx_l = int(data['duration'] // clip_len) if data['duration'] % clip_len == 0 else int(data['duration'] // clip_len) + 1
+            # ctx_l = min(round(data['duration'] // clip_len), self.max_v_l)
+
+            ###############################################
+            # moment와 non-moment 구하기
+            ###############################################
+
+            if 'relevant_clip_ids' in data: # QVHighlights
+
+                all_clips = np.zeros(ctx_l)
+                all_clips[data['relevant_clip_ids']] = 1
+
+                moments = find_ones_groups(all_clips, clip_len)
+                assert moments == data['relevant_windows']
+
+                non_moments = find_zeros_groups(all_clips, clip_len)
+
+            else: # Charades, TACoS (single moment)
+                moments = data['relevant_windows']
+                non_moments = []
+                if moments[0][0] != 0:
+                    non_moments.append([0, moments[0][0]])
+                if moments[0][1] != data['duration']:
+                    non_moments.append([moments[0][1], data['duration']])    
+                non_moments[-1][1] = ctx_l * clip_len   
+
+            # 만약 non-moment가 없다면 이 data는 pass
+            if not non_moments:
+                continue 
+            
+            # crop augmentation
+            if self.crop:
+                new_crop_data = crop(data, moments=moments, non_moments=non_moments, thres_crop=self.thres_crop, ctx_l=ctx_l, clip_len=clip_len)
+                if new_crop_data:
+                    new_datalist.append(new_crop_data)
+
+            # merge augmentation for multi-moments dataset
+            if self.merge:
+                if self.dset_name == 'hl': 
+                    new_merge_data = merge_multi_moments(data, moments=moments, non_moments=non_moments, thres_merge=self.thres_merge, ctx_l=ctx_l, clip_len=clip_len)
+
+                    if new_merge_data:
+                        new_datalist.append(new_merge_data)
+                else:
+                    s, e = data['relevant_windows'][0]
+                    rs = int(s // clip_len) if s % clip_len == 0 else int(s // clip_len) + 1
+                    re = int(e // clip_len)
+                    rs, re = rs * clip_len, re * clip_len
+
+                    moments = [[rs, re]]
+                    non_moments = []
+                    if rs - clip_len > 0:
+                        non_moments.append([0, rs - clip_len])
+                    if re + clip_len < ctx_l * clip_len:
+                        non_moments.append([re + clip_len, ctx_l * clip_len ])    
+
+                    new_merge_data = merge_single_moment(data, moments=moments, non_moments=non_moments, thres_merge=self.thres_merge, ctx_l=ctx_l, clip_len=clip_len)
+                    if new_merge_data:
+                        new_datalist.append(new_merge_data)
+
+        # save_jsonl(new_datalist, f'charades_crop.jsonl')
+        logger.info(f"Length Augmentation : {len(datalist)} -> {len(new_datalist)}")
+
+
+        if self.merge:
+            save_jsonl(new_datalist, f'data/tr_crop_{self.thres_crop}_merge_{self.thres_merge}.jsonl')
+        else:
+            save_jsonl(new_datalist, f'data/tr_crop_{self.thres_crop}.jsonl')
+        
+        return new_datalist
 
     def __len__(self):
         return len(self.data)
@@ -105,7 +193,7 @@ class StartEndDataset(Dataset):
         model_inputs = dict()
         model_inputs["query_feat"] = self._get_query_feat_by_qid(meta["qid"])  # (Dq, ) or (Lq, Dq)
         if self.use_video:
-            if self.crop:
+            if self.crop or self.merge:
                 if 'org_clip_ids_order' in meta.keys():
                     model_inputs["video_feat"] = self._get_video_crop_feat_by_vid(meta["vid"], meta["org_clip_ids_order"])  # (Lv, Dv)
                 else:
@@ -196,8 +284,17 @@ class StartEndDataset(Dataset):
                                 moment_class.append(m_cls)
                                 break
                     model_inputs["moment_class"] = torch.tensor(moment_class)
-                    if len(model_inputs["moment_class"]) != len(lengths):
-                        print('dd')
+                    assert len(model_inputs["moment_class"]) == len(lengths)
+
+                loss_moment_class = []
+                if self.loss_m_vals is not None:
+                    for l in lengths:
+                        for m_cls, m_val in enumerate(self.loss_m_vals):
+                            if l <= m_val:
+                                loss_moment_class.append(m_cls)
+                                break
+                    model_inputs["loss_moment_class"] = torch.tensor(loss_moment_class)
+                    assert len(model_inputs["loss_moment_class"]) == len(lengths)
                         
         return dict(meta=meta, model_inputs=model_inputs)
 
@@ -485,7 +582,11 @@ def start_end_collate(batch):
         if k == "moment_class":
             batched_data[k] = [dict(m_cls=e["model_inputs"]["moment_class"]) for e in batch]
             continue
-        
+
+        if k == "loss_moment_class":
+            batched_data[k] = [dict(m_cls=e["model_inputs"]["loss_moment_class"]) for e in batch]
+            continue
+
         batched_data[k] = pad_sequences_1d(
             [e["model_inputs"][k] for e in batch], dtype=torch.float32, fixed_length=None)
     return batch_meta, batched_data
@@ -520,6 +621,12 @@ def prepare_batch_inputs(batched_model_inputs, device, non_blocking=False):
             dict(m_cls=e["m_cls"].to(device, non_blocking=non_blocking))
             for e in batched_model_inputs["moment_class"]
         ]
-        
+
+    if "loss_moment_class" in batched_model_inputs:
+        targets["loss_moment_class"] = [
+            dict(m_cls=e["m_cls"].to(device, non_blocking=non_blocking))
+            for e in batched_model_inputs["loss_moment_class"]
+        ]
+
     targets = None if len(targets) == 0 else targets
     return model_inputs, targets
