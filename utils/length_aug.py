@@ -6,7 +6,17 @@ import math
 from collections import defaultdict
 
 def crop_clip_index(start_index, end_index, non_idx=False, num_crop=1, clip_len=2):
-    candidates = list(range(start_index + clip_len, end_index, clip_len))
+
+    if clip_len < 1:# vgg
+        start_index = int(start_index) if start_index % 1 == 0 else int(start_index) + 1
+        end_index = int(end_index)
+        candidates = list(range((start_index) + 1, end_index, 1))
+        num_crop = int(num_crop)
+    else:
+        candidates = list(range(start_index + clip_len, end_index, clip_len))
+
+    # candidates = list(range(start_index + clip_len, end_index, clip_len))
+
     if non_idx:
         candidates.append(-1) # not crop
     if num_crop > 1:
@@ -100,6 +110,8 @@ def crop(data, moments, non_moments, thres_crop, ctx_l, clip_len):
                 
                 rss = int(ss // clip_len) if ss != 0 else 0
                 ree = int(ee // clip_len) if ee % clip_len == 0 else int(ee // clip_len) + 1
+                if clip_len < 1 and s != ss: # vgg
+                    rss += 1
                 moment['clip_id'] = [rss, ree]
                 moment['seg_sec'] = [ss - rss * clip_len, ree * clip_len - ee]
                 moment['len'] = (ree - rss)
@@ -181,6 +193,8 @@ def crop(data, moments, non_moments, thres_crop, ctx_l, clip_len):
                 else:
                     rss = int(ss // clip_len) if ss % clip_len == 0 else int(ss // clip_len) + 1
                 ree = int(ee // clip_len)
+                if clip_len < 1 and s != ss: # vgg
+                    rss -= 1
 
                 non_moment['clip_id'] = [rss, ree]
                 non_moment['len'] = (ree - rss)
@@ -262,14 +276,21 @@ def crop(data, moments, non_moments, thres_crop, ctx_l, clip_len):
             new_data['relevant_windows'].append([sups + subs, supe - sube])
 
 
+    ### Test ####
     if 'saliency_scores' in data:
         assert len(data['saliency_scores']) == len(new_data['saliency_scores'])
         assert len(new_data['saliency_scores']) == len(new_data['relevant_clip_ids'])
 
+    clips_for_check = np.zeros(ctx_l)
+    for s, e in new_data['org_clip_ids_order']:
+        clips_for_check[s:e] += 1
+    assert np.all(clips_for_check <= 1)
+    assert np.all(clips_for_check[:-1] > 0)
+    
     return new_data
 
 
-def merge_multi_moments(data, moments, non_moments, thres_merge, ctx_l, clip_len, thres_short=10):
+def merge_multi_moments(data, moments, non_moments, thres_merge, ctx_l, clip_len):
 
     ###############################################
     # 합칠 만한 short들 구하기
@@ -279,7 +300,7 @@ def merge_multi_moments(data, moments, non_moments, thres_merge, ctx_l, clip_len
     short_sum = 0
     for i, (s, e) in enumerate(moments):
         l = e - s
-        if l <= thres_short:
+        if l <= 10:
             short_clip_idxs.append(i)
             short_sum += l
 
@@ -451,9 +472,15 @@ def merge_multi_moments(data, moments, non_moments, thres_merge, ctx_l, clip_len
     # new_data['relevant_windows']
     new_data['relevant_windows'] = find_ones_groups(new_clips, clip_len)
 
+    #### Test 
     assert len(data['saliency_scores']) == len(new_data['saliency_scores'])
     assert len(new_data['saliency_scores']) == len(new_data['relevant_clip_ids'])
 
+    clips_for_check = np.zeros(ctx_l)
+    for s, e in new_data['org_clip_ids_order']:
+        clips_for_check[s:e] += 1
+    assert np.all(clips_for_check <= 1)
+    assert np.all(clips_for_check > 0)
 
     return new_data
 
@@ -482,7 +509,6 @@ def merge_single_moment(data, moments, non_moments, thres_merge, ctx_l, clip_len
     moment_segments = []
 
     ss = s
-    ss_idx=0
     for ee in moment_crop_idxs:
         moment = dict()
 
@@ -528,9 +554,6 @@ def merge_single_moment(data, moments, non_moments, thres_merge, ctx_l, clip_len
             non_moment_segments.append(non_moment)
             ss = ee
 
-    if not non_moment_segments:
-        return
-    
     random.shuffle(non_moment_segments)
 
     pop_l = 0
@@ -586,8 +609,16 @@ def merge_single_moment(data, moments, non_moments, thres_merge, ctx_l, clip_len
     new_data['relevant_windows'] = find_ones_groups(new_clips, clip_len)
     new_data['duration'] = cur_clip_id * clip_len
 
+    ########## Test
+
     if 'saliency_scores' in data:
-        assert len(data['saliency_scores']) * 2 == len(new_data['saliency_scores'])
+        assert len(data['saliency_scores']) == len(new_data['saliency_scores'])
         assert len(new_data['saliency_scores']) == len(new_data['relevant_clip_ids'])
+
+    clips_for_check = np.zeros(ctx_l)
+    unique_order_clip_ids = list(map(list, set(map(tuple, new_data['org_clip_ids_order']))))
+    for s, e in unique_order_clip_ids:
+        clips_for_check[s:e] += 1
+    assert np.all(clips_for_check <= 1)
 
     return new_data
