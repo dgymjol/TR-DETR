@@ -160,6 +160,10 @@ class BaseOptions(object):
 
         parser.add_argument('--loss_m_classes', type=str, default=None)
 
+        parser.add_argument('--length_span_weight', action='store_true')
+        parser.add_argument('--length_giou_weight', action='store_true')
+
+        parser.add_argument('--length_query', type=str, default=None)
         
         self.parser = parser
 

@@ -8,7 +8,6 @@ from torch import nn
 import torch.nn.functional as F
 from tr_detr.span_utils import generalized_temporal_iou, span_cxw_to_xx
 
-
 class HungarianMatcher(nn.Module):
     """This class computes an assignment between the targets and the predictions of the network
 
@@ -19,7 +18,7 @@ class HungarianMatcher(nn.Module):
     def __init__(self,  cost_class: float = 1, cost_span: float = 1, cost_giou: float = 1,
                  span_loss_type: str = "l1", max_v_l: int = 75,
                  num_queries : int = 10, m_classes=None, cc_matcing=False,
-                 class_anchor=False, tgt_embed=False, pos_query=1):
+                 class_anchor=False, tgt_embed=False, pos_query=1, length_query=None,):
         """Creates the matcher
 
         Params:
@@ -50,6 +49,11 @@ class HungarianMatcher(nn.Module):
 
         self.pos_query = pos_query
 
+        if length_query is not None:
+            self.len_query_num = [int(lq) for lq in length_query[1:-1].split(',')]
+        else:
+            self.len_query_num = None
+
     @torch.no_grad()
     def forward(self, outputs, targets):
         """ Performs the matching
@@ -77,7 +81,8 @@ class HungarianMatcher(nn.Module):
 
             batchwise_pred_indices = [ [] for i in range(bs)]
             batchwise_gt_indices = [ [] for i in range(bs)]
-
+            
+            cum_query_num = 0
             for cls_num in range(self.num_classes):
 
                 gt_class_idx_align = []
@@ -127,42 +132,84 @@ class HungarianMatcher(nn.Module):
                 tgt_spans = torch.cat(spans)
                 tgt_ids = torch.full([len(tgt_spans)], self.foreground_label)
                 
-                out_prob = outputs["pred_logits"][:, (self.num_queries*cls_num):self.num_queries*(cls_num+1), :].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
-                tgt_ids = torch.full([len(tgt_spans)], self.foreground_label)   # [total #spans in the batch]
-                cost_class = -out_prob[:, tgt_ids] 
-                
-                if 'aux_pred_logits' in outputs.keys():
-                    aux_out_prob = outputs["aux_pred_logits"][:, (self.num_queries*cls_num):self.num_queries*(cls_num+1), :].flatten(0, 1).softmax(-1)
-                    aux_tgt_ids = torch.full([len(tgt_spans)], cls_num)
-                    cost_class += (-aux_out_prob[:, aux_tgt_ids])
-    
-                # We flatten to compute the cost matrices in a batch
-                out_spans = outputs["pred_spans"][:, (self.num_queries*cls_num):self.num_queries*(cls_num+1), :].flatten(0, 1)  # [batch_size * num_queries, 2]
+                if self.len_query_num is None:
+                    out_prob = outputs["pred_logits"][:, (self.num_queries*cls_num):self.num_queries*(cls_num+1), :].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
 
-                # Compute the L1 cost between spans
-                cost_span = torch.cdist(out_spans, tgt_spans, p=1)  # [batch_size * num_queries, total #spans in the batch]
+                    tgt_ids = torch.full([len(tgt_spans)], self.foreground_label)   # [total #spans in the batch]
+                    cost_class = -out_prob[:, tgt_ids] 
+                    
+                    if 'aux_pred_logits' in outputs.keys():
+                        aux_out_prob = outputs["aux_pred_logits"][:, (self.num_queries*cls_num):self.num_queries*(cls_num+1), :].flatten(0, 1).softmax(-1)
+                        aux_tgt_ids = torch.full([len(tgt_spans)], cls_num)
+                        cost_class += (-aux_out_prob[:, aux_tgt_ids])
+        
+                    # We flatten to compute the cost matrices in a batch
+                    out_spans = outputs["pred_spans"][:, (self.num_queries*cls_num):self.num_queries*(cls_num+1), :].flatten(0, 1)  # [batch_size * num_queries, 2]
 
-                # Compute the giou cost between spans
-                # [batch_size * num_queries, total #spans in the batch]
-                cost_giou = - generalized_temporal_iou(span_cxw_to_xx(out_spans), span_cxw_to_xx(tgt_spans))
+                    # Compute the L1 cost between spans
+                    cost_span = torch.cdist(out_spans, tgt_spans, p=1)  # [batch_size * num_queries, total #spans in the batch]
 
-                # Final cost matrix
-                # import ipdb; ipdb.set_trace()
-                C = self.cost_span * cost_span + self.cost_giou * cost_giou + self.cost_class * cost_class
-                C = C.view(bs, self.num_queries, -1).cpu()
+                    # Compute the giou cost between spans
+                    # [batch_size * num_queries, total #spans in the batch]
+                    cost_giou = - generalized_temporal_iou(span_cxw_to_xx(out_spans), span_cxw_to_xx(tgt_spans))
 
-                # indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
-                # classwise_indices.append([(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices])
-                
+                    # Final cost matrix
+                    # import ipdb; ipdb.set_trace()
+                    C = self.cost_span * cost_span + self.cost_giou * cost_giou + self.cost_class * cost_class
+                    C = C.view(bs, self.num_queries, -1).cpu()
 
-                for i, c in enumerate(C.split(target_sizes, -1)):
-                    pred_temp_idxs, gt_temp_idxs = (linear_sum_assignment(c[i]))
+                    # indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+                    # classwise_indices.append([(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices])
+                    
 
-                    for pred_temp_idx in pred_temp_idxs:
-                        batchwise_pred_indices[i].append(pred_temp_idx + (self.num_queries * cls_num))
+                    for i, c in enumerate(C.split(target_sizes, -1)):
+                        pred_temp_idxs, gt_temp_idxs = (linear_sum_assignment(c[i]))
 
-                    for gt_temp_idx in gt_temp_idxs:
-                        batchwise_gt_indices[i].append(gt_class_idx_align[i][gt_temp_idx])
+                        for pred_temp_idx in pred_temp_idxs:
+                            batchwise_pred_indices[i].append(pred_temp_idx + (self.num_queries * cls_num))
+
+                        for gt_temp_idx in gt_temp_idxs:
+                            batchwise_gt_indices[i].append(gt_class_idx_align[i][gt_temp_idx])
+                else:
+                    out_prob = outputs["pred_logits"][:, cum_query_num:cum_query_num+self.len_query_num[cls_num], :].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
+
+                    tgt_ids = torch.full([len(tgt_spans)], self.foreground_label)   # [total #spans in the batch]
+                    cost_class = -out_prob[:, tgt_ids] 
+                    
+                    if 'aux_pred_logits' in outputs.keys():
+                        aux_out_prob = outputs["aux_pred_logits"][:, cum_query_num:cum_query_num+self.len_query_num[cls_num], :].flatten(0, 1).softmax(-1)
+                        aux_tgt_ids = torch.full([len(tgt_spans)], cls_num)
+                        cost_class += (-aux_out_prob[:, aux_tgt_ids])
+        
+                    # We flatten to compute the cost matrices in a batch
+                    out_spans = outputs["pred_spans"][:, cum_query_num:cum_query_num+self.len_query_num[cls_num], :].flatten(0, 1)  # [batch_size * num_queries, 2]
+
+                    # Compute the L1 cost between spans
+                    cost_span = torch.cdist(out_spans, tgt_spans, p=1)  # [batch_size * num_queries, total #spans in the batch]
+
+                    # Compute the giou cost between spans
+                    # [batch_size * num_queries, total #spans in the batch]
+                    cost_giou = - generalized_temporal_iou(span_cxw_to_xx(out_spans), span_cxw_to_xx(tgt_spans))
+
+                    # Final cost matrix
+                    # import ipdb; ipdb.set_trace()
+                    C = self.cost_span * cost_span + self.cost_giou * cost_giou + self.cost_class * cost_class
+                    C = C.view(bs, self.len_query_num[cls_num], -1).cpu()
+
+                    # indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+                    # classwise_indices.append([(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices])
+                    
+
+                    for i, c in enumerate(C.split(target_sizes, -1)):
+                        pred_temp_idxs, gt_temp_idxs = (linear_sum_assignment(c[i]))
+
+                        for pred_temp_idx in pred_temp_idxs:
+                            batchwise_pred_indices[i].append(pred_temp_idx + cum_query_num)
+
+                        for gt_temp_idx in gt_temp_idxs:
+                            batchwise_gt_indices[i].append(gt_class_idx_align[i][gt_temp_idx])
+
+                    cum_query_num += self.len_query_num[cls_num]
 
             final_indices = [(torch.as_tensor(p, dtype=torch.int64), torch.as_tensor(g, dtype=torch.int64)) for p, g in zip(batchwise_pred_indices, batchwise_gt_indices)]
         
@@ -226,5 +273,6 @@ def build_matcher(args):
         cost_span=args.set_cost_span, cost_giou=args.set_cost_giou,
         cost_class=args.set_cost_class, span_loss_type=args.span_loss_type, max_v_l=args.max_v_l,
         num_queries=args.num_queries, m_classes=args.m_classes, cc_matcing=args.cc_matching,
-        tgt_embed=args.tgt_embed, class_anchor=args.class_anchor, pos_query=args.pos_query
+        tgt_embed=args.tgt_embed, class_anchor=args.class_anchor, pos_query=args.pos_query,
+        length_query=args.length_query,
     )
